@@ -1,0 +1,211 @@
+---
+title: "Practical Machine Learning Course Final Project"
+author: "J Gold"
+date: "Tuesday, April 05, 2016"
+output: html_document
+---
+
+I tried several machine learning methods using the caret package before choosing my
+final model in order to predict the classe of the 20 test cases.  Prior to choosing
+the models, I ran a correlation between variables in the training dataset (see code
+below).  After observing that several variables had correlations of > 80%, I decided
+to consider principal components analysis (pca) in model building.  I included
+random forest and boosting in the list of potential modelsbecause these have been
+found to be top performers in prediction contests.  I also considered linear 
+discriminant analysis (lda) because a linear model would provide easier interpre
+tability.  Hence, the models I chose to evaluate included: random forest, random
+forest with pca, lda, and boosting.  In all models, 10-fold cross-validation was
+implemented through the trainControl parameter in caret’s train function.  I chose
+random forest for my final model because the accuracy was greatest with that method
+(see table 1).
+
+Table 1. Model type with accuracy and OOB error rates.
+
+
+Model type                  | Accuracy | OOB error rate
+----------------------------|----------|---------------
+Random forest, mtry=3	    | 0.996	   |  0.33%
+Random forest, mtry=4	    | 0.996	   |  0.29%
+Random forest, mtry=5	    | 0.996	   |  0.30%
+Random forest, mtry=8	    | 0.997	   |  0.24%
+Random forest w. pca	    | 0.983	   |  1.77%
+Linear discriminant analysis| 0.550	   |  -
+Stochastic gradient boosting| 0.963	   |  -
+
+
+In order to tune the random forest model, I used different values of mtry (number of
+predictors available for splitting per node).  Note that it was not possible for me
+to let the train function choose mtry as it crashed my computer, although this may
+have been more optimal.  I chose the mtry value with the lowest out-of-bag (OOB)
+error rate, and the greatest accuracy.  I tried mtry values between 3-8.  I stopped
+at mtry = 8 because I judged that the accuracy for that model was sufficiently high.
+Hence, my final model was random forest with mtry = 8. This had an accuracy of 
+0.997, and with an OOB error rate of 0.24%.  Note that the model metrics are shown 
+below for the final model, while only the code is shown for the other models that I
+tried.  My final model yielded 100% prediction accuracy when running on the test 
+set.
+
+
+```{r setup, include=FALSE}
+# enable the cache
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+```{r}
+## remove any global environment variables to save space
+rm(list=ls())
+## increase memory limit
+memory.limit(90000)
+## load required libraries
+library(caret)
+library(randomForest)
+library(doParallel)
+library(foreach)
+library(doSNOW)
+library(gbm)
+library(survival)
+library(HiDimDA)
+library(plyr)
+
+## set a seed so results can be duplicated
+set.seed(3465)
+
+## read in training and test datasets
+datTrain = read.csv("pml-training.csv")
+datTest = read.csv("pml-testing.csv")
+
+## eliminate variables not to be used in the model.  Keep the following predictor
+# variables: for belt, arm, forearm, dumbbell: pitch, yaw, roll,total acceleration, 
+# gyros_xx_x,_y, _z, accel_xx_x, _y, _z, and magnet_xx_x, _y, & _z.  Also, keep
+# user_name as one would expect correlation of observations within a particular
+## participant.  Keep classe as the outcome.
+
+initDataset <- function(dat) {
+    
+    ## eliminate variables not to be used in the model
+    namedTrain <- names(dat)
+    
+    gkurtosis <- grep("kurtosis",namedTrain,value=TRUE)
+    gskewness <- grep("skewness",namedTrain,value=TRUE)
+    gmax <- grep("max_",namedTrain,value=TRUE)
+    gmin <- grep("min_",namedTrain,value=TRUE)
+    gamplitude <- grep("amplitude_",namedTrain,value=TRUE)
+    gstddev <- grep("stddev_",namedTrain,value=TRUE)
+    gavg <- grep("avg_",namedTrain,value=TRUE)
+    gvar <- grep("var_",namedTrain,value=TRUE)
+    gtimestamp <- grep("timestamp",namedTrain,value=TRUE)
+    gwindow <- grep("window",namedTrain,value=TRUE)
+    
+    gexclude <- c(gkurtosis,gskewness,gmax,gmin,gamplitude,gvar,gavg,gstddev,
+                  gtimestamp,gwindow,"user_name", "X")
+    myvars <- names(dat) %in% c(gexclude)
+    ssdatTrain <- dat[!myvars]
+    return(ssdatTrain)
+}
+
+## only include observations where new_window columns say "no" indicating no summary 
+## statistics in training dataset.
+tempdatTrain <- subset(datTrain,new_window == "no")
+## initialize training dataset
+tempTrain <- initDataset(tempdatTrain)
+## initialize testing dataset and remove "problem_id" column since we don't
+## want "problem_id" to be a predictor variable.
+tempTest <-initDataset(datTest)
+tempTest <- tempTest[,-54]
+
+## remove variables no longer needed.
+rm(tempdatTrain)
+rm(datTest)
+rm(datTrain)
+```
+```{r, eval = FALSE}
+## Just to get an idea of the dataset, determine correlations among 
+# variables.  
+M <- abs(cor(tempTrain[,-53]))
+diag(M) <- 0
+# all variables corr .80 or >
+which(M > 0.8,arr.ind=T)   
+   
+# Since so many variables are correlated, consider factor analysis for dimension 
+# reduction (see below).
+``` 
+```{r}
+# set method to cross-validation, with 10 folds
+train_control <- trainControl(method="cv",number=10)
+
+# run models over multiple cores to save time
+registerDoSNOW(makeCluster(detectCores()/2))
+```
+```{r, eval = FALSE}
+## because letting random forest algorithm without specifying mtry takes way too
+## much time, I have opted to set mtry to specific values.
+
+## try random forest w. mtry = 4
+newGrid = expand.grid(mtry = 4)
+modFitrf4 <- train((as.factor(classe))~., data=tempTrain, method = "rf", 
+                  trControl=train_control, tuneGrid = newGrid)
+#predict on test set
+prf4 <- predict(modFitrf4,tempTest)
+
+## try random forest w. mtry = 3
+newGrid = expand.grid(mtry = 3)
+modFitrf3 <- train((as.factor(classe))~., data=tempTrain, method = "rf", 
+                  trControl=train_control, tuneGrid = newGrid)
+#predict on test set
+prf3 <- predict(modFitrf3,tempTest)
+
+## try random forest w. mtry = 5
+newGrid = expand.grid(mtry = 5)
+modFitrf5 <- train((as.factor(classe))~., data=tempTrain, method = "rf", 
+                   trControl=train_control, tuneGrid = newGrid)
+#predict on test set
+prf5 <- predict(modFitrf5,tempTest)
+```
+```{r}
+## This is the final model that I chose.
+## try random forest w. mtry = 8
+newGrid = expand.grid(mtry = 8)
+modFitrf8 <- train((as.factor(classe))~., data=tempTrain, method = "rf", 
+                   trControl=train_control, tuneGrid = newGrid)
+#predict on test set
+prf8 <- predict(modFitrf8,tempTest)
+# print prediction and model metrics.
+prf8
+modFitrf8
+modFitrf8$finalModel
+```
+```{r, eval = FALSE}
+## try random forest w. pca, mtry unspecified. Performing a pca in the caret package 
+## preProc also scales and centers the variables.  
+modFitrfpca <- train((as.factor(classe))~., data=tempTrain, method = "rf", 
+                      trControl=train_control, preProcess = "pca")
+
+prfpca <- predict(modFitrfpca, tempTest)
+# print prediction and model metrics.
+prfpca
+modFitrfpca
+modFitrfpca$finalModel
+
+## try factor-based linear discriminant analysis; q is # factors
+newGrid = expand.grid(q = 5)
+modFitlda <- train((as.factor(classe))~., data=tempTrain, method = "RFlda", 
+                      trControl=train_control, preProc = c("center","scale"),
+                      tuneGrid = newGrid)
+
+plda <- predict(modFitrflda,tempTest)
+# print prediction and model metrics.
+plda
+modFitlda
+modFitlda$finalModel
+
+## try boosting
+modFitb <- train((as.factor(classe))~., data=tempTrain, method = "gbm", 
+                 trControl=train_control, verbose = FALSE)
+
+prb <- predict(modFitb,tempTest)
+prb
+modFitb
+modFitb$finalModel
+```
+
+
